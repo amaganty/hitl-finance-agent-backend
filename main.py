@@ -26,8 +26,13 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup():
-    create_db_and_tables()
-
+    # Do not crash the whole service if DB is temporarily unreachable.
+    # We will still fail DB-backed endpoints with clear errors, but /health stays up.
+    try:
+        create_db_and_tables()
+    except Exception as e:
+        # Keep it visible in Render logs
+        print(f"[startup] DB init failed: {repr(e)}")
 
 @app.get("/health")
 def health():
