@@ -1,6 +1,5 @@
-# main.py
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 import pandas as pd
 import yfinance as yf
@@ -8,47 +7,50 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 
+import os
+
 from db import create_db_and_tables, get_session
 from models import ApprovalRequest, Position, Trade
 
 app = FastAPI(title="HITL Finance Agent API")
 
-# If you use Next.js rewrites (/api -> backend), CORS matters less,
-# but keeping this is fine for direct Swagger + local dev.
+# -------------------------
+# CORS
+# -------------------------
+# 1) Local dev
+# 2) Vercel preview/prod (*.vercel.app)
+# 3) Optional explicit origin via env var (custom domain later)
+frontend_origin = os.getenv("FRONTEND_ORIGIN", "").strip()
+
+allow_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+if frontend_origin:
+    allow_origins.append(frontend_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=allow_origins,
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 @app.on_event("startup")
 def on_startup():
-    # Do not crash the whole service if DB is temporarily unreachable.
-    # We will still fail DB-backed endpoints with clear errors, but /health stays up.
-    try:
-        create_db_and_tables()
-    except Exception as e:
-        # Keep it visible in Render logs
-        print(f"[startup] DB init failed: {repr(e)}")
+    create_db_and_tables()
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
-
 # -------------------------
 # Helpers
 # -------------------------
 def _flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    yfinance can return:
-      - SingleIndex columns: Open/High/Low/Close/Volume
-      - MultiIndex columns: (Ticker, Field) or (Field, Ticker)
-    This normalizes so that market endpoints can reliably access fields.
-    """
     if df is None or df.empty:
         return df
 
@@ -58,45 +60,30 @@ def _flatten_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
         ohlcv = {"Open", "High", "Low", "Close", "Volume"}
 
         if ohlcv.issubset(lvl0):
-            # ("Open","AAPL") style
             df.columns = df.columns.get_level_values(0)
         elif ohlcv.issubset(lvl1):
-            # ("AAPL","Open") style
             df.columns = df.columns.get_level_values(1)
         else:
             df.columns = ["_".join(map(str, c)) for c in df.columns]
 
     return df
 
-
 def _latest_close_for(data: pd.DataFrame, sym: str) -> float:
-    """
-    Robustly extract the latest close for a symbol from yfinance output.
-    Supports:
-      - MultiIndex columns (sym, "Close") or ("Close", sym)
-      - SingleIndex columns when only one ticker returned
-    Returns NaN if unavailable.
-    """
     try:
         if data is None or data.empty:
             return float("nan")
 
-        # Multi-ticker case typically MultiIndex
         if isinstance(data.columns, pd.MultiIndex):
-            # Most common: (SYM, "Close")
             if (sym, "Close") in data.columns:
                 s = data[(sym, "Close")].dropna()
                 return float(s.iloc[-1]) if len(s) else float("nan")
 
-            # Sometimes: ("Close", SYM)
             if ("Close", sym) in data.columns:
                 s = data[("Close", sym)].dropna()
                 return float(s.iloc[-1]) if len(s) else float("nan")
 
-            # Fallback: try to find a "Close" column under sym by slicing
             try:
                 sub = data.xs(sym, axis=1, level=0, drop_level=False)
-                # sub columns might still be MultiIndex
                 if isinstance(sub.columns, pd.MultiIndex) and (sym, "Close") in sub.columns:
                     s = sub[(sym, "Close")].dropna()
                     return float(s.iloc[-1]) if len(s) else float("nan")
@@ -105,7 +92,6 @@ def _latest_close_for(data: pd.DataFrame, sym: str) -> float:
 
             return float("nan")
 
-        # SingleIndex: assume "Close" exists
         if "Close" in data.columns:
             s = data["Close"].dropna()
             return float(s.iloc[-1]) if len(s) else float("nan")
@@ -113,7 +99,6 @@ def _latest_close_for(data: pd.DataFrame, sym: str) -> float:
         return float("nan")
     except Exception:
         return float("nan")
-
 
 # -------------------------
 # HITL Approvals API
@@ -139,12 +124,10 @@ def create_approval(payload: Dict[str, Any], session: Session = Depends(get_sess
     session.refresh(approval)
     return approval
 
-
 @app.get("/hitl/approvals", response_model=List[ApprovalRequest])
 def list_approvals(session: Session = Depends(get_session)):
     stmt = select(ApprovalRequest).order_by(ApprovalRequest.created_ts.desc())
     return session.exec(stmt).all()
-
 
 @app.post("/hitl/approvals/{approval_id}/decision", response_model=ApprovalRequest)
 def decide_approval(approval_id: int, payload: Dict[str, Any], session: Session = Depends(get_session)):
@@ -170,7 +153,6 @@ def decide_approval(approval_id: int, payload: Dict[str, Any], session: Session 
     session.commit()
     session.refresh(approval)
     return approval
-
 
 # -------------------------
 # Market Data API (OHLCV)
@@ -221,7 +203,6 @@ def get_ohlcv(symbol: str, period: str = "6mo", interval: str = "1d"):
         if pd.isna(t):
             continue
 
-        # Ensure t becomes ISO string
         if isinstance(t, pd.Timestamp):
             t_iso = t.to_pydatetime().isoformat()
         else:
@@ -243,7 +224,6 @@ def get_ohlcv(symbol: str, period: str = "6mo", interval: str = "1d"):
 
     return {"symbol": sym, "period": period, "interval": interval, "count": len(points), "points": points}
 
-
 # -------------------------
 # Portfolio (manual positions)
 # -------------------------
@@ -251,7 +231,6 @@ def get_ohlcv(symbol: str, period: str = "6mo", interval: str = "1d"):
 def list_positions(session: Session = Depends(get_session)):
     stmt = select(Position).order_by(Position.symbol.asc())
     return session.exec(stmt).all()
-
 
 @app.post("/portfolio/positions", response_model=Position)
 def upsert_position(payload: Dict[str, Any], session: Session = Depends(get_session)):
@@ -284,15 +263,8 @@ def upsert_position(payload: Dict[str, Any], session: Session = Depends(get_sess
     session.refresh(pos)
     return pos
 
-
 @app.get("/portfolio/pnl")
 def portfolio_pnl(session: Session = Depends(get_session)):
-    """
-    Position-based PnL:
-    - Uses Position table (symbol, qty, avg_price)
-    - Pulls latest close via yfinance
-    - NEVER crashes if a ticker is missing from response
-    """
     positions = session.exec(select(Position)).all()
     if not positions:
         return {"unrealized_pnl": 0.0, "gross_exposure": 0.0, "positions_count": 0, "positions": []}
@@ -349,7 +321,6 @@ def portfolio_pnl(session: Session = Depends(get_session)):
         "positions_count": len(rows),
         "positions": rows,
     }
-
 
 # -------------------------
 # Agent (creates approval request)
@@ -421,7 +392,6 @@ def agent_ask(payload: Dict[str, Any], session: Session = Depends(get_session)):
 
     return {"answer": answer, "recommendation_json": recommendation_json, "approval_id": approval.id}
 
-
 # -------------------------
 # Trades + trade-based PnL
 # -------------------------
@@ -429,7 +399,6 @@ def agent_ask(payload: Dict[str, Any], session: Session = Depends(get_session)):
 def list_trades(session: Session = Depends(get_session)):
     stmt = select(Trade).order_by(Trade.ts.desc(), Trade.id.desc())
     return session.exec(stmt).all()
-
 
 @app.post("/trades")
 def create_trade(payload: Dict[str, Any], session: Session = Depends(get_session)):
@@ -475,12 +444,8 @@ def create_trade(payload: Dict[str, Any], session: Session = Depends(get_session
     session.refresh(trade)
     return trade
 
-
 @app.get("/portfolio/pnl_trades")
 def portfolio_pnl_trades(session: Session = Depends(get_session)):
-    """
-    Trade-based PnL (weighted average cost).
-    """
     trades = session.exec(select(Trade).order_by(Trade.ts.asc(), Trade.id.asc())).all()
 
     if not trades:
