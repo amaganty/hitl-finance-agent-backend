@@ -18,21 +18,6 @@ This system is intentionally designed to:
 
 It is well-suited for portfolio demonstrations, system-design interviews, and full-stack architecture discussions.
 
----
-
-## Live Architecture
-
-Browser (Next.js / Vercel)
-|
-| HTTPS (REST)
-v
-FastAPI Backend (Render)
-|
-| SQLModel / SQLAlchemy
-v
-PostgreSQL Database (Supabase)
-
-
 External market data is fetched read-only from public APIs and is **never persisted**.
 
 ---
