@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: hitl_postgres
+    environment:
+      POSTGRES_USER: hitl
+      POSTGRES_PASSWORD: hitl_password
+      POSTGRES_DB: hitl_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - hitl_pgdata:/var/lib/postgresql/data
+
+volumes:
+  hitl_pgdata:
