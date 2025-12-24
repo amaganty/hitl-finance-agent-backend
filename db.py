@@ -8,9 +8,13 @@ raw_url = os.getenv("DATABASE_URL", DEFAULT_DB_URL)
 # Normalize common issues:
 # - extra whitespace/newlines
 # - old "postgres://" scheme
+# - ensure we use psycopg (v3) driver: postgresql+psycopg://
 DATABASE_URL = raw_url.strip()
+
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
 engine = create_engine(DATABASE_URL, echo=False)
 
